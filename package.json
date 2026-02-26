@@ -1,0 +1,24 @@
+{
+  "name": "tsic-ainode",
+  "version": "1.0.0",
+  "description": "TSIC AINode Skill installer — adds AINode SSH Dongle support to Claude Code, Cursor, Codex, Gemini CLI, and Antigravity",
+  "bin": {
+    "tsic-ainode": "./bin/index.js"
+  },
+  "scripts": {
+    "start": "node bin/index.js"
+  },
+  "keywords": [
+    "ainode", "tsic", "ssh", "dongle", "claude-code", "cursor", "codex", "gemini", "skill", "mcp"
+  ],
+  "author": "TSIC",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16"
+  },
+  "files": [
+    "bin/",
+    "templates/",
+    "locales/"
+  ]
+}

@@ -1,0 +1,58 @@
+---
+description: TSIC AINode miniPC 連線與服務部署規則。當工作涉及「AINode」「部署服務」「Docker 部署」「SSH AINode」「TSIC」時套用此規則。自動偵測 AINODE USB Dongle 並使用 Dongle 私鑰連線。
+globs:
+alwaysApply: false
+---
+
+# TSIC AINode 連線規則
+
+## Dongle 偵測
+
+使用 AINode 前，先偵測 AINODE USB Dongle（FAT12 磁碟，卷標 `AINODE`）：
+
+```bash
+# Windows
+(Get-WmiObject Win32_LogicalDisk | Where-Object {$_.VolumeName -eq "AINODE"}).DeviceID
+
+# macOS / Linux
+ls /Volumes/AINODE 2>/dev/null || blkid -L AINODE 2>/dev/null
+```
+
+## SSH 連線
+
+```bash
+# 有 Dongle（優先）
+ssh -F {DONGLE_PATH}/SSHCFG -i {DONGLE_PATH}/ID_ED255 AINode
+
+# 無 Dongle（fallback）
+ssh AINode   # 需要 ~/.ssh/config 有 AINode alias
+```
+
+**AINode IP**: `192.168.1.100`，需 RJ45 直連。
+
+## 部署流程
+
+1. 偵測 Dongle → 取得 SSH_CMD
+2. 確認連線：`{SSH_CMD} "echo ok"`
+3. 上傳專案（排除 `.git`, `node_modules`, `.env`）
+4. 在 AINode 上執行 `docker compose up -d --build`
+5. 確認服務：`{SSH_CMD} "docker ps"`
+
+## 重要原則
+
+- **私鑰只在 Dongle 上**，不要嘗試從其他路徑載入
+- Dongle 拔除後無法連線，這是設計行為
+- `.env` 檔案需單獨詢問使用者是否上傳
+
+## 【預留】MCP 與 AI 接入口
+
+> 開發中，待 AINode 韌體更新後啟用。
+
+```
+# MCP Server（即將推出）
+mcp connect ainode --transport ssh --key {DONGLE_PATH}/ID_ED255
+
+# AI 優化端點（即將推出）
+http://192.168.1.100:8080/api/v1/status
+http://192.168.1.100:8080/api/v1/services
+```
