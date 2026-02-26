@@ -54,36 +54,36 @@ function detectLocale() {
 // ---------------------------------------------------------------------------
 const TOOLS = [
   {
-    id:       'claude',
-    nameKey:  'tool_claude',
-    detect:   () => fs.existsSync(path.join(HOME, '.claude')),
-    install:  installClaude,
+    id:      'claude',
+    nameKey: 'tool_claude',
+    detect:  () => fs.existsSync(path.join(HOME, '.claude')),
+    install: installClaude,
   },
   {
-    id:       'cursor',
-    nameKey:  'tool_cursor',
-    detect:   () => fs.existsSync(path.join(HOME, '.cursor')) ||
-                    fs.existsSync(path.join(CWD, '.cursor')),
-    install:  installCursor,
+    id:      'cursor',
+    nameKey: 'tool_cursor',
+    detect:  () => cmdExists('cursor') ||
+                   fs.existsSync(path.join(HOME, '.cursor')) ||
+                   fs.existsSync(path.join(CWD, '.cursor')),
+    install: installCursor,
   },
   {
-    id:       'codex',
-    nameKey:  'tool_codex',
-    detect:   () => cmdExists('codex') || fs.existsSync(path.join(HOME, '.codex')),
-    install:  installCodex,
+    id:      'codex',
+    nameKey: 'tool_codex',
+    detect:  () => cmdExists('codex'),
+    install: installCodex,
   },
   {
-    id:       'gemini',
-    nameKey:  'tool_gemini',
-    detect:   () => cmdExists('gemini') || fs.existsSync(path.join(HOME, '.gemini')),
-    install:  installGemini,
+    id:      'gemini',
+    nameKey: 'tool_gemini',
+    detect:  () => cmdExists('gemini') || cmdExists('gemini-cli'),
+    install: installGemini,
   },
   {
-    id:       'antigravity',
-    nameKey:  'tool_antigravity',
-    detect:   () => cmdExists('antigravity') ||
-                    fs.existsSync(path.join(HOME, '.antigravity')),
-    install:  installAntigravity,
+    id:      'antigravity',
+    nameKey: 'tool_antigravity',
+    detect:  () => cmdExists('antigravity'),
+    install: installAntigravity,
   },
 ];
 
@@ -105,7 +105,7 @@ function copyTemplate(src, dest) {
 }
 
 function appendToFile(src, dest) {
-  const tag    = '<!-- tsic-ainode -->';
+  const tag     = '<!-- tsic-ainode -->';
   const content = fs.readFileSync(src, 'utf8');
   if (fs.existsSync(dest)) {
     const existing = fs.readFileSync(dest, 'utf8');
@@ -164,47 +164,48 @@ function createRL() {
 }
 
 function ask(rl, question) {
-  return new Promise(resolve => rl.question(question, resolve));
+  return new Promise(resolve => rl.question(question, ans => resolve(ans.trim())));
 }
 
-function askChoice(rl, question, choices) {
-  return new Promise(resolve => {
-    const opts = choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
-    rl.question(`${question}\n${opts}\n> `, ans => {
-      const idx = parseInt(ans.trim(), 10) - 1;
-      resolve(choices[Math.max(0, Math.min(idx, choices.length - 1))]);
-    });
-  });
+// Single-prompt choice: shows numbered list, returns chosen item (default: first)
+async function askChoice(rl, question, choices) {
+  const opts = choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
+  const ans  = await ask(rl, `${question}\n${opts}\n> `);
+  const idx  = parseInt(ans, 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= choices.length) return choices[0];
+  return choices[idx];
 }
 
+// Single-prompt checkbox: shows numbered list with detected pre-selected.
+// User types space-separated numbers to select, or Enter to accept detected defaults.
 async function askCheckbox(rl, question, items) {
-  console.log(`\n${question}`);
-  const selected = new Set(items.filter(i => i.detected).map(i => i.id));
-  items.forEach((item, i) => {
-    const check = selected.has(item.id) ? '◉' : '○';
-    const hint  = item.detected ? ' (detected)' : '';
-    console.log(`  ${i + 1}. ${check} ${item.label}${hint}`);
-  });
-  console.log('  (Enter numbers to toggle, e.g. "1 3", or Enter to confirm)');
+  const defaultNums = items
+    .map((item, i) => (item.detected ? String(i + 1) : null))
+    .filter(Boolean);
 
-  while (true) {
-    const ans = await ask(rl, '> ');
-    if (ans.trim() === '') break;
-    ans.trim().split(/\s+/).forEach(n => {
-      const idx = parseInt(n, 10) - 1;
-      if (idx >= 0 && idx < items.length) {
-        const id = items[idx].id;
-        selected.has(id) ? selected.delete(id) : selected.add(id);
-      }
-    });
-    // redraw
-    items.forEach((item, i) => {
-      const check = selected.has(item.id) ? '◉' : '○';
-      process.stdout.write(`  ${i + 1}. ${check} ${item.label}\n`);
-    });
-    console.log('  (Enter to confirm, or toggle more)');
+  console.log(`\n${question}`);
+  items.forEach((item, i) => {
+    const mark = item.detected ? '[✓]' : '[ ]';
+    console.log(`  ${i + 1}. ${mark} ${item.label}`);
+  });
+
+  const hint = defaultNums.length > 0
+    ? `(Enter 確認選取 ${defaultNums.join(' ')}，或輸入編號如 "1 3")`
+    : '(輸入編號如 "1 3"，多選用空白分隔)';
+  console.log(`  ${hint}`);
+
+  const ans = await ask(rl, '> ');
+
+  if (ans === '' && defaultNums.length > 0) {
+    return items.filter(item => item.detected);
   }
-  return items.filter(i => selected.has(i.id));
+
+  const selected = ans.split(/\s+/)
+    .map(n => parseInt(n, 10) - 1)
+    .filter(i => i >= 0 && i < items.length)
+    .map(i => items[i]);
+
+  return selected;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,11 +233,11 @@ async function main() {
   loadLocale(locale);
 
   // Detect tools
-  const detectedIds = TOOLS.filter(t => t.detect()).map(t => t.id);
+  const detectedIds = TOOLS.filter(tool => tool.detect()).map(tool => tool.id);
   if (detectedIds.length > 0) {
     console.log(`\n${T.detect_title}`);
     detectedIds.forEach(id => {
-      const tool = TOOLS.find(t => t.id === id);
+      const tool = TOOLS.find(tool => tool.id === id);
       console.log(`  ✓ ${T[tool.nameKey] || tool.id}`);
     });
   } else {
@@ -267,16 +268,13 @@ async function main() {
 
   // Install
   console.log(`\n${T.installing}`);
-  const results = [];
   for (const tool of chosen) {
     try {
       const dest = tool.install(scope);
-      console.log(`  ${T.installed_ok}: ${tool.label}`);
+      console.log(`  ✓ ${T.installed_ok}: ${tool.label}`);
       console.log(`    → ${dest}`);
-      results.push({ tool, dest, ok: true });
     } catch (err) {
       console.error(`  ✗ ${T.err_write}: ${tool.label} — ${err.message}`);
-      results.push({ tool, ok: false });
     }
   }
 
