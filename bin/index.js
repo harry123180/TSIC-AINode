@@ -6,11 +6,11 @@
 
 'use strict';
 
-const fs   = require('fs');
-const path = require('path');
-const os   = require('os');
+const fs    = require('fs');
+const path  = require('path');
+const os    = require('os');
 const { execSync } = require('child_process');
-const readline = require('readline');
+const clack = require('@clack/prompts');
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -19,7 +19,6 @@ const PKG_ROOT    = path.join(__dirname, '..');
 const LOCALES_DIR = path.join(PKG_ROOT, 'locales');
 const TMPL_DIR    = path.join(PKG_ROOT, 'templates');
 const HOME        = os.homedir();
-const CWD         = process.cwd();
 const IS_WIN      = process.platform === 'win32';
 
 // ---------------------------------------------------------------------------
@@ -27,7 +26,7 @@ const IS_WIN      = process.platform === 'win32';
 // ---------------------------------------------------------------------------
 let T = {};
 function loadLocale(lang) {
-  const file = path.join(LOCALES_DIR, `${lang}.json`);
+  const file     = path.join(LOCALES_DIR, `${lang}.json`);
   const fallback = path.join(LOCALES_DIR, 'en.json');
   try {
     T = JSON.parse(fs.readFileSync(fs.existsSync(file) ? file : fallback, 'utf8'));
@@ -40,9 +39,6 @@ function t(key, fallback = key) {
   return T[key] || fallback;
 }
 
-// ---------------------------------------------------------------------------
-// Detect OS locale
-// ---------------------------------------------------------------------------
 function detectLocale() {
   const env = process.env.LANG || process.env.LC_ALL || process.env.LANGUAGE || '';
   if (env.toLowerCase().includes('zh')) return 'zh-TW';
@@ -50,8 +46,17 @@ function detectLocale() {
 }
 
 // ---------------------------------------------------------------------------
-// Tool definitions
+// Tool detection
 // ---------------------------------------------------------------------------
+function cmdExists(cmd) {
+  try {
+    execSync(IS_WIN ? `where ${cmd}` : `which ${cmd}`, { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const TOOLS = [
   {
     id:      'claude',
@@ -63,8 +68,7 @@ const TOOLS = [
     id:      'cursor',
     nameKey: 'tool_cursor',
     detect:  () => cmdExists('cursor') ||
-                   fs.existsSync(path.join(HOME, '.cursor')) ||
-                   fs.existsSync(path.join(CWD, '.cursor')),
+                   fs.existsSync(path.join(HOME, '.cursor')),
     install: installCursor,
   },
   {
@@ -87,15 +91,6 @@ const TOOLS = [
   },
 ];
 
-function cmdExists(cmd) {
-  try {
-    execSync(IS_WIN ? `where ${cmd}` : `which ${cmd}`, { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Install functions
 // ---------------------------------------------------------------------------
@@ -109,7 +104,7 @@ function appendToFile(src, dest) {
   const content = fs.readFileSync(src, 'utf8');
   if (fs.existsSync(dest)) {
     const existing = fs.readFileSync(dest, 'utf8');
-    if (existing.includes(tag)) return; // already installed
+    if (existing.includes(tag)) return;
     fs.appendFileSync(dest, `\n\n${tag}\n${content}`);
   } else {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -117,178 +112,144 @@ function appendToFile(src, dest) {
   }
 }
 
-function installClaude(scope) {
+function installClaude(scope, projectPath) {
   const dest = path.join(HOME, '.claude', 'skills', 'tsic-ainode', 'SKILL.md');
   copyTemplate(path.join(TMPL_DIR, 'claude-code', 'SKILL.md'), dest);
   return dest;
 }
 
-function installCursor(scope) {
+function installCursor(scope, projectPath) {
   const rulesDir = scope === 'global'
     ? path.join(HOME, '.cursor', 'rules')
-    : path.join(CWD, '.cursor', 'rules');
+    : path.join(projectPath, '.cursor', 'rules');
   const dest = path.join(rulesDir, 'tsic-ainode.mdc');
   copyTemplate(path.join(TMPL_DIR, 'cursor', 'tsic-ainode.mdc'), dest);
   return dest;
 }
 
-function installCodex(scope) {
+function installCodex(scope, projectPath) {
   const dest = scope === 'global'
     ? path.join(HOME, '.codex', 'AGENTS.md')
-    : path.join(CWD, 'AGENTS.md');
+    : path.join(projectPath, 'AGENTS.md');
   appendToFile(path.join(TMPL_DIR, 'codex', 'AGENTS.md'), dest);
   return dest;
 }
 
-function installGemini(scope) {
+function installGemini(scope, projectPath) {
   const dest = scope === 'global'
     ? path.join(HOME, '.gemini', 'GEMINI.md')
-    : path.join(CWD, 'GEMINI.md');
+    : path.join(projectPath, 'GEMINI.md');
   appendToFile(path.join(TMPL_DIR, 'gemini-cli', 'GEMINI.md'), dest);
   return dest;
 }
 
-function installAntigravity(scope) {
+function installAntigravity(scope, projectPath) {
   const dest = scope === 'global'
     ? path.join(HOME, '.antigravity', 'AGENTS.md')
-    : path.join(CWD, '.antigravity', 'AGENTS.md');
+    : path.join(projectPath, '.antigravity', 'AGENTS.md');
   appendToFile(path.join(TMPL_DIR, 'antigravity', 'AGENTS.md'), dest);
   return dest;
-}
-
-// ---------------------------------------------------------------------------
-// Readline helpers
-// ---------------------------------------------------------------------------
-function createRL() {
-  return readline.createInterface({ input: process.stdin, output: process.stdout });
-}
-
-function ask(rl, question) {
-  return new Promise(resolve => rl.question(question, ans => resolve(ans.trim())));
-}
-
-// Single-prompt choice: shows numbered list, returns chosen item (default: first)
-async function askChoice(rl, question, choices) {
-  const opts = choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
-  const ans  = await ask(rl, `${question}\n${opts}\n> `);
-  const idx  = parseInt(ans, 10) - 1;
-  if (isNaN(idx) || idx < 0 || idx >= choices.length) return choices[0];
-  return choices[idx];
-}
-
-// Single-prompt checkbox: shows numbered list with detected pre-selected.
-// User types space-separated numbers to select, or Enter to accept detected defaults.
-async function askCheckbox(rl, question, items) {
-  const defaultNums = items
-    .map((item, i) => (item.detected ? String(i + 1) : null))
-    .filter(Boolean);
-
-  console.log(`\n${question}`);
-  items.forEach((item, i) => {
-    const mark = item.detected ? '[✓]' : '[ ]';
-    console.log(`  ${i + 1}. ${mark} ${item.label}`);
-  });
-
-  const hint = defaultNums.length > 0
-    ? `(Enter 確認選取 ${defaultNums.join(' ')}，或輸入編號如 "1 3")`
-    : '(輸入編號如 "1 3"，多選用空白分隔)';
-  console.log(`  ${hint}`);
-
-  const ans = await ask(rl, '> ');
-
-  if (ans === '' && defaultNums.length > 0) {
-    return items.filter(item => item.detected);
-  }
-
-  const selected = ans.split(/\s+/)
-    .map(n => parseInt(n, 10) - 1)
-    .filter(i => i >= 0 && i < items.length)
-    .map(i => items[i]);
-
-  return selected;
 }
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
-  // Load default locale first
-  let locale = detectLocale();
-  loadLocale(locale);
+  // Load default locale
+  loadLocale(detectLocale());
 
-  const rl = createRL();
+  clack.intro(` ${t('welcome')} `);
 
-  // Banner
-  console.log('\n' + '─'.repeat(50));
-  console.log(` ${t('welcome')}`);
-  console.log(` ${t('welcome_sub')}`);
-  console.log('─'.repeat(50));
-
-  // Language selection
-  const langChoice = await askChoice(rl, `\n${t('lang_prompt')}`, [
-    '繁體中文 (zh-TW)',
-    'English (en)',
-  ]);
-  locale = langChoice.startsWith('繁') ? 'zh-TW' : 'en';
-  loadLocale(locale);
+  // Language
+  const langVal = await clack.select({
+    message: t('lang_prompt', 'Language'),
+    options: [
+      { value: 'zh-TW', label: '繁體中文' },
+      { value: 'en',    label: 'English'  },
+    ],
+  });
+  if (clack.isCancel(langVal)) { clack.cancel('Cancelled.'); process.exit(0); }
+  loadLocale(langVal);
 
   // Detect tools
   const detectedIds = TOOLS.filter(tool => tool.detect()).map(tool => tool.id);
-  if (detectedIds.length > 0) {
-    console.log(`\n${T.detect_title}`);
-    detectedIds.forEach(id => {
-      const tool = TOOLS.find(tool => tool.id === id);
-      console.log(`  ✓ ${T[tool.nameKey] || tool.id}`);
-    });
-  } else {
-    console.log(`\n${T.detect_none}`);
-  }
 
-  // Choose tools
-  const toolItems = TOOLS.map(tool => ({
-    id:       tool.id,
-    label:    T[tool.nameKey] || tool.id,
-    detected: detectedIds.includes(tool.id),
-    install:  tool.install,
-  }));
-  const chosen = await askCheckbox(rl, T.tools_prompt, toolItems);
+  // Tool selection — arrow keys + space to toggle, Enter to confirm
+  const selectedIds = await clack.multiselect({
+    message: T.tools_prompt || 'Select tools to install',
+    options: TOOLS.map(tool => ({
+      value: tool.id,
+      label: T[tool.nameKey] || tool.id,
+      hint:  detectedIds.includes(tool.id)
+               ? (langVal === 'zh-TW' ? '已偵測' : 'detected')
+               : undefined,
+    })),
+    initialValues: detectedIds,
+    required: false,
+  });
 
-  if (chosen.length === 0) {
-    console.log('\nNo tools selected. Exiting.');
-    rl.close();
-    return;
+  if (clack.isCancel(selectedIds) || selectedIds.length === 0) {
+    clack.cancel(langVal === 'zh-TW' ? '未選擇任何工具。' : 'No tools selected.');
+    process.exit(0);
   }
 
   // Scope
-  const scopeChoice = await askChoice(rl, `\n${T.scope_prompt}`, [
-    T.scope_global,
-    T.scope_project,
-  ]);
-  const scope = scopeChoice === T.scope_global ? 'global' : 'project';
+  const scope = await clack.select({
+    message: T.scope_prompt || 'Installation scope',
+    options: [
+      { value: 'global',  label: T.scope_global  || 'Global'  },
+      { value: 'project', label: T.scope_project || 'Project' },
+    ],
+  });
+  if (clack.isCancel(scope)) { clack.cancel('Cancelled.'); process.exit(0); }
+
+  // Project path (only when scope = project)
+  let projectPath = process.cwd();
+  if (scope === 'project') {
+    const inputPath = await clack.text({
+      message:      T.project_path_prompt || 'Target project directory',
+      placeholder:  process.cwd(),
+      defaultValue: process.cwd(),
+      validate(v) {
+        const p = (v || '').trim() || process.cwd();
+        if (!fs.existsSync(p)) return `Directory does not exist: ${p}`;
+      },
+    });
+    if (clack.isCancel(inputPath)) { clack.cancel('Cancelled.'); process.exit(0); }
+    if (inputPath && inputPath.trim()) projectPath = inputPath.trim();
+  }
 
   // Install
-  console.log(`\n${T.installing}`);
-  for (const tool of chosen) {
+  const spinner = clack.spinner();
+  spinner.start(T.installing || 'Installing...');
+
+  const results = [];
+  for (const toolId of selectedIds) {
+    const tool = TOOLS.find(tool => tool.id === toolId);
     try {
-      const dest = tool.install(scope);
-      console.log(`  ✓ ${T.installed_ok}: ${tool.label}`);
-      console.log(`    → ${dest}`);
+      const dest = tool.install(scope, projectPath);
+      results.push({ label: T[tool.nameKey] || tool.id, dest, ok: true });
     } catch (err) {
-      console.error(`  ✗ ${T.err_write}: ${tool.label} — ${err.message}`);
+      results.push({ label: T[tool.nameKey] || tool.id, err: err.message, ok: false });
     }
   }
 
-  // Done
-  console.log('\n' + '─'.repeat(50));
-  console.log(` ${T.done_title}`);
-  console.log('─'.repeat(50));
-  console.log(`\n${T.done_usage}`);
-  console.log(`  ${T.done_example_zh}`);
-  console.log(`  ${T.done_example_en}`);
-  console.log(`\n${T.done_docs} https://github.com/TSIC-tech/TSIC-AINode`);
-  console.log();
+  spinner.stop(T.done_title || 'Done!');
 
-  rl.close();
+  for (const r of results) {
+    if (r.ok) {
+      clack.log.success(`${r.label}\n  → ${r.dest}`);
+    } else {
+      clack.log.error(`${r.label}: ${r.err}`);
+    }
+  }
+
+  clack.note(
+    `${T.done_example_zh || ''}\n${T.done_example_en || ''}`,
+    T.done_usage || 'Usage'
+  );
+
+  clack.outro(`${T.done_docs || 'Docs'}: https://github.com/TSIC-tech/TSIC-AINode`);
 }
 
 main().catch(err => {
