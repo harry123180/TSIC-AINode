@@ -3,10 +3,12 @@
 ## AINode Connection
 
 This project may interact with a **TSIC AINode miniPC** (192.168.1.100) via SSH.
-The AINode uses an **AINODE USB Security Dongle** for authentication — the private key
-lives on the Dongle's encrypted Flash and never exists as a plain file on disk.
+Authentication uses an **AINODE USB Security Dongle** — private key lives on the Dongle's
+encrypted Flash. The key is only accessible while the Dongle is physically connected.
 
-### Detect Dongle
+---
+
+### Step 1: Detect Dongle
 
 ```bash
 # Windows
@@ -19,58 +21,118 @@ ls /Volumes/AINODE 2>/dev/null && echo "found" || echo "not_found"
 blkid -L AINODE 2>/dev/null
 ```
 
-### SSH Commands
+Set `DONGLE_PATH` to the mount point found above.
+
+---
+
+### Step 2: Copy Key to Temp (Required)
+
+OpenSSH refuses private keys on FAT drives (too-open permissions). **Always copy to temp first:**
 
 ```bash
-# With Dongle (preferred)
-DONGLE=/Volumes/AINODE          # macOS example; adjust per OS
-ssh -F "$DONGLE/SSHCFG" -i "$DONGLE/ID_ED255" AINode "<command>"
-
-# Without Dongle (fallback — requires ~/.ssh/config Host AINode entry)
-ssh AINode "<command>"
+# macOS / Linux
+AINODE_TMP_KEY=$(mktemp /tmp/ainode_key_XXXXX)
+cp "$DONGLE_PATH/ID_ED255" "$AINODE_TMP_KEY"
+chmod 600 "$AINODE_TMP_KEY"
+SSH_CMD="ssh -F $DONGLE_PATH/SSHCFG -i $AINODE_TMP_KEY AINode"
+SCP_CMD="scp -F $DONGLE_PATH/SSHCFG -i $AINODE_TMP_KEY"
 ```
 
-### Deploy a Service
+```powershell
+# Windows PowerShell
+$tmpKey = "$env:TEMP\ainode_key_$([System.IO.Path]::GetRandomFileName())"
+Copy-Item "$DONGLE_PATH\ID_ED255" $tmpKey
+icacls $tmpKey /inheritance:r /grant "${env:USERNAME}:(R)" | Out-Null
+$SSH_CMD = "ssh -F `"$DONGLE_PATH\SSHCFG`" -i `"$tmpKey`" AINode"
+```
+
+Without Dongle (fallback — requires `Host AINode` in `~/.ssh/config`):
+```bash
+SSH_CMD="ssh AINode"
+SCP_CMD="scp"
+```
+
+---
+
+### Step 3: First-Time Network Setup (New Computer)
+
+AINode is at fixed IP `192.168.1.100` via RJ45 direct connection (LAN2 port).
+The laptop must be on the same subnet:
 
 ```bash
+# macOS
+networksetup -setmanual "USB 10/100/1000 LAN" 192.168.1.101 255.255.255.0
+
+# Linux
+sudo ip addr add 192.168.1.101/24 dev eth0 && sudo ip link set eth0 up
+```
+
+```powershell
+# Windows
+New-NetIPAddress -InterfaceAlias "乙太網路" -IPAddress 192.168.1.101 -PrefixLength 24
+```
+
+Skip this step if connected via a router/switch with DHCP.
+
+---
+
+### Step 4: Deploy a Service
+
+```bash
+# Verify connection
+$SSH_CMD -o ConnectTimeout=5 -o BatchMode=yes "echo ok && whoami"
+
 # Package project
 tar -czf /tmp/app.tar.gz --exclude='.git' --exclude='node_modules' --exclude='.env' .
 
 # Upload
-scp -F "$DONGLE/SSHCFG" -i "$DONGLE/ID_ED255" /tmp/app.tar.gz AINode:~/services/app/
+$SCP_CMD /tmp/app.tar.gz AINode:~/services/app/
 
 # Start with Docker Compose
-ssh -F "$DONGLE/SSHCFG" -i "$DONGLE/ID_ED255" AINode \
-  "cd ~/services/app && tar -xzf app.tar.gz && docker compose up -d --build"
+$SSH_CMD "cd ~/services/app && tar -xzf app.tar.gz && docker compose up -d --build"
+
+# Cleanup temp key
+rm -f "$AINODE_TMP_KEY"   # or: Remove-Item $tmpKey
 ```
+
+---
 
 ### Common Operations
 
 ```bash
 # Check running services
-ssh [...] AINode "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+$SSH_CMD "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
 
 # Tail logs
-ssh [...] AINode "docker logs -f <service> --tail 50"
+$SSH_CMD "docker logs -f <service> --tail 50"
 
 # System health
-ssh [...] AINode "df -h / && free -h"
+$SSH_CMD "df -h / && free -h"
 ```
+
+---
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `WARNING: UNPROTECTED PRIVATE KEY FILE` | Key used directly from FAT drive | Do Step 2 (copy to temp) |
+| `Connection refused` / `No route to host` | Laptop not on 192.168.1.x | Do Step 3 (set IP) |
+| `Permission denied (publickey)` | Dongle not paired with this AINode | Insert Dongle into AINode USB port first |
 
 ## Security Notes
 
-- The private key (`ID_ED255`) is **only accessible when the Dongle is physically connected**.
-- Never attempt to copy or cache the private key file.
-- If the Dongle is not detected, fall back to `ssh AINode` (requires local SSH config).
+- The private key is only readable while the Dongle is physically connected.
+- The temp key copy should be deleted after the session.
+- Never hardcode or cache the private key.
 
 ## Upcoming: MCP & AI Endpoints
 
-> These features are under development and will be available in a future AINode firmware update.
+> Under development — available in a future AINode firmware update.
 
 ```
 # MCP Server (coming soon)
 # AINode will expose an MCP server over SSH for AI agent integration
-# Capabilities: service status, deployment, log query, resource monitoring
 
 # REST API (coming soon)
 GET  http://192.168.1.100:8080/api/v1/status

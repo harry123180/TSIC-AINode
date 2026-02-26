@@ -14,7 +14,8 @@ description: 連線到 TSIC AINode miniPC 並管理服務。偵測 AINODE USB Se
 
 ### Windows（PowerShell）
 ```powershell
-Get-WmiObject Win32_LogicalDisk | Where-Object { $_.VolumeName -eq "AINODE" } | Select-Object DeviceID
+$disk = Get-WmiObject Win32_LogicalDisk | Where-Object { $_.VolumeName -eq "AINODE" }
+$disk.DeviceID   # e.g. "E:"
 ```
 
 ### macOS
@@ -29,29 +30,98 @@ blkid -L AINODE 2>/dev/null || findmnt -l | grep AINODE | awk '{print $1}'
 
 **找到 Dongle（卷標 AINODE）：**
 ```
-DONGLE_PATH = <掛載路徑>          # e.g. E:\ (Windows) / /Volumes/AINODE (macOS)
-SSH_KEY     = {DONGLE_PATH}/ID_ED255
-SSH_CONFIG  = {DONGLE_PATH}/SSHCFG
-SSH_CMD     = ssh -F {SSH_CONFIG} -i {SSH_KEY} AINode
-SCP_CMD     = scp -F {SSH_CONFIG} -i {SSH_KEY}
+DONGLE_PATH = <掛載路徑>      # e.g. E:\ (Windows) / /Volumes/AINODE (macOS)
+SSH_KEY_SRC  = {DONGLE_PATH}/ID_ED255
+SSH_CONFIG   = {DONGLE_PATH}/SSHCFG
 ```
 
 **找不到 Dongle → Fallback：**
 ```
-SSH_CMD = ssh AINode   # 使用 ~/.ssh/config 中的 AINode alias
+SSH_CMD = ssh AINode          # 使用 ~/.ssh/config 中的 AINode alias
+SCP_CMD = scp                 # 同上
 ```
 
 ---
 
-## Step 1：確認連線
+## Step 0.5：私鑰暫存（重要 — FAT 磁碟權限問題）
 
+OpenSSH 拒絕使用 FAT 磁碟上的私鑰（權限過於開放），**必須先複製到本地 temp 並限制權限**。
+
+### macOS / Linux
 ```bash
-{SSH_CMD} -o BatchMode=yes "echo ok && whoami && uptime"
+AINODE_TMP_KEY=$(mktemp /tmp/ainode_key_XXXXX)
+cp "$SSH_KEY_SRC" "$AINODE_TMP_KEY"
+chmod 600 "$AINODE_TMP_KEY"
+SSH_KEY="$AINODE_TMP_KEY"
+SSH_CMD="ssh -F $SSH_CONFIG -i $SSH_KEY AINode"
+SCP_CMD="scp -F $SSH_CONFIG -i $SSH_KEY"
+# 連線結束後清除：rm -f "$AINODE_TMP_KEY"
 ```
 
-若失敗：
-- 有 Dongle → 確認 Dongle 已掛載，`ID_ED255` 檔案存在
-- 無 Dongle → 確認 `~/.ssh/config` 有 `Host AINode` 設定
+### Windows（PowerShell）
+```powershell
+$tmpKey = "$env:TEMP\ainode_key_$([System.IO.Path]::GetRandomFileName())"
+Copy-Item "$SSH_KEY_SRC" $tmpKey
+
+# 限制只有目前使用者可讀
+icacls $tmpKey /inheritance:r /grant "${env:USERNAME}:(R)" | Out-Null
+
+$SSH_KEY = $tmpKey
+$SSH_CMD = "ssh -F `"$SSH_CONFIG`" -i `"$SSH_KEY`" AINode"
+# 連線結束後清除：Remove-Item $tmpKey
+```
+
+---
+
+## Step 0.6：首次使用新電腦 — 網路設定
+
+AINode 固定 IP：`192.168.1.100`（RJ45 直連 LAN2 埠）。
+
+新電腦第一次連線需確認筆電網卡設定：
+
+### macOS
+```bash
+# 查看 RJ45 介面名稱（通常是 en0 或 en1~en5）
+networksetup -listallnetworkservices
+# 設定靜態 IP（將 "USB 10/100/1000 LAN" 換成實際介面名稱）
+networksetup -setmanual "USB 10/100/1000 LAN" 192.168.1.101 255.255.255.0
+# 確認連通
+ping -c 2 192.168.1.100
+```
+
+### Linux
+```bash
+# 查 RJ45 介面（通常是 eth0 / enp3s0 / enx...）
+ip link show
+# 暫時設定 IP
+sudo ip addr add 192.168.1.101/24 dev eth0
+sudo ip link set eth0 up
+ping -c 2 192.168.1.100
+```
+
+### Windows（PowerShell，以系統管理員執行）
+```powershell
+# 查 RJ45 介面
+Get-NetAdapter | Where-Object { $_.Status -eq "Up" -or $_.MediaType -eq "802.3" }
+# 設定靜態 IP（InterfaceAlias 換成實際介面名稱）
+New-NetIPAddress -InterfaceAlias "乙太網路" -IPAddress 192.168.1.101 -PrefixLength 24
+ping 192.168.1.100
+```
+
+> 若 AINode 接在同一路由器/交換器且有 DHCP，則跳過此步驟。
+
+---
+
+## Step 1：確認 SSH 連線
+
+```bash
+{SSH_CMD} -o ConnectTimeout=5 -o BatchMode=yes "echo ok && whoami && uptime"
+```
+
+若失敗排查：
+- `WARNING: UNPROTECTED PRIVATE KEY FILE` → 沒做 Step 0.5，key 仍在 FAT 磁碟
+- `Connection refused` / `No route to host` → 網路未設定（見 Step 0.6）
+- `Permission denied (publickey)` → Dongle 尚未與此 AINode 配對（插入 AINode USB 孔完成首次配對）
 
 ---
 
@@ -99,6 +169,19 @@ tar -czf /tmp/{service}.tar.gz --exclude='.git' --exclude='node_modules' --exclu
 
 ---
 
+## 連線結束：清除暫存私鑰
+
+```bash
+# macOS / Linux
+rm -f "$AINODE_TMP_KEY"
+```
+```powershell
+# Windows
+Remove-Item $tmpKey -ErrorAction SilentlyContinue
+```
+
+---
+
 ## 【預留】AINode AI 接入口（即將推出）
 
 > 以下功能正在開發中，未來版本會在此 Skill 更新。
@@ -132,7 +215,7 @@ AINode 內建 MCP Server，AI Agent 可直接查詢：
 | 項目 | 規格 |
 |------|------|
 | 主機 IP | 192.168.1.100 |
-| 連線方式 | RJ45 直連（LAN2）|
+| 連線方式 | RJ45 直連（LAN2）或同網段 |
 | SSH Port | 22 |
 | 預設使用者 | 見 Dongle SSHCFG |
 | Docker | docker compose v2 |

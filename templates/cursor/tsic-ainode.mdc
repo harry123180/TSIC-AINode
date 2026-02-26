@@ -6,9 +6,7 @@ alwaysApply: false
 
 # TSIC AINode 連線規則
 
-## Dongle 偵測
-
-使用 AINode 前，先偵測 AINODE USB Dongle（FAT12 磁碟，卷標 `AINODE`）：
+## Step 1：Dongle 偵測
 
 ```bash
 # Windows
@@ -18,31 +16,58 @@ alwaysApply: false
 ls /Volumes/AINODE 2>/dev/null || blkid -L AINODE 2>/dev/null
 ```
 
-## SSH 連線
+## Step 2：私鑰暫存（必要）
+
+FAT 磁碟上的私鑰因權限問題會被 OpenSSH 拒絕，**必須先複製到 temp 再使用**：
 
 ```bash
-# 有 Dongle（優先）
-ssh -F {DONGLE_PATH}/SSHCFG -i {DONGLE_PATH}/ID_ED255 AINode
-
-# 無 Dongle（fallback）
-ssh AINode   # 需要 ~/.ssh/config 有 AINode alias
+# macOS / Linux
+AINODE_TMP_KEY=$(mktemp /tmp/ainode_key_XXXXX)
+cp "$DONGLE_PATH/ID_ED255" "$AINODE_TMP_KEY"
+chmod 600 "$AINODE_TMP_KEY"
+SSH_CMD="ssh -F $DONGLE_PATH/SSHCFG -i $AINODE_TMP_KEY AINode"
 ```
 
-**AINode IP**: `192.168.1.100`，需 RJ45 直連。
+```powershell
+# Windows PowerShell
+$tmpKey = "$env:TEMP\ainode_key_$([System.IO.Path]::GetRandomFileName())"
+Copy-Item "$DONGLE_PATH\ID_ED255" $tmpKey
+icacls $tmpKey /inheritance:r /grant "${env:USERNAME}:(R)" | Out-Null
+$SSH_CMD = "ssh -F `"$DONGLE_PATH\SSHCFG`" -i `"$tmpKey`" AINode"
+```
 
-## 部署流程
+無 Dongle fallback：`SSH_CMD = ssh AINode`（需 `~/.ssh/config` 有 AINode alias）
 
-1. 偵測 Dongle → 取得 SSH_CMD
-2. 確認連線：`{SSH_CMD} "echo ok"`
-3. 上傳專案（排除 `.git`, `node_modules`, `.env`）
-4. 在 AINode 上執行 `docker compose up -d --build`
-5. 確認服務：`{SSH_CMD} "docker ps"`
+## Step 3：首次使用新電腦 — 網路
+
+AINode 固定 `192.168.1.100`，筆電 RJ45 需設定同網段 IP（如 `192.168.1.101/24`）。
+
+```bash
+# macOS
+networksetup -setmanual "USB 10/100/1000 LAN" 192.168.1.101 255.255.255.0
+# Linux
+sudo ip addr add 192.168.1.101/24 dev eth0 && sudo ip link set eth0 up
+```
+
+```powershell
+# Windows
+New-NetIPAddress -InterfaceAlias "乙太網路" -IPAddress 192.168.1.101 -PrefixLength 24
+```
+
+## Step 4：部署流程
+
+1. 確認連線：`{SSH_CMD} -o ConnectTimeout=5 "echo ok && whoami"`
+2. 上傳專案（排除 `.git`, `node_modules`, `.env`）
+3. 執行：`{SSH_CMD} "cd ~/services/{service} && docker compose up -d --build"`
+4. 確認：`{SSH_CMD} "docker ps | grep {service}"`
+5. 清除 temp key：`rm -f "$AINODE_TMP_KEY"` / `Remove-Item $tmpKey`
 
 ## 重要原則
 
 - **私鑰只在 Dongle 上**，不要嘗試從其他路徑載入
 - Dongle 拔除後無法連線，這是設計行為
 - `.env` 檔案需單獨詢問使用者是否上傳
+- 若 `Permission denied (publickey)` → Dongle 尚未與此 AINode 配對
 
 ## 【預留】MCP 與 AI 接入口
 
@@ -50,7 +75,7 @@ ssh AINode   # 需要 ~/.ssh/config 有 AINode alias
 
 ```
 # MCP Server（即將推出）
-mcp connect ainode --transport ssh --key {DONGLE_PATH}/ID_ED255
+mcp connect ainode --transport ssh --key {AINODE_TMP_KEY}
 
 # AI 優化端點（即將推出）
 http://192.168.1.100:8080/api/v1/status

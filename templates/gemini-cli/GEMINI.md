@@ -7,7 +7,9 @@ Authentication uses the **AINODE USB Security Dongle** — a hardware key that s
 the SSH private key in AES-encrypted Flash. The key is only readable while the Dongle
 is physically attached.
 
-## Dongle Detection
+---
+
+## Step 1: Dongle Detection
 
 Before any AINode operation, detect the Dongle:
 
@@ -19,50 +21,99 @@ Before any AINode operation, detect the Dongle:
 
 Set `DONGLE_PATH` to the mount point: `E:\` / `/Volumes/AINODE` / `/media/user/AINODE`.
 
-## SSH Connection
+---
+
+## Step 2: Copy Key to Temp (Required)
+
+OpenSSH refuses private keys on FAT drives (too-open permissions). **Always copy to temp first:**
 
 ```bash
-# Dongle present
-ssh -F "${DONGLE_PATH}/SSHCFG" -i "${DONGLE_PATH}/ID_ED255" AINode
-
-# Dongle absent (fallback)
-ssh AINode   # requires Host AINode in ~/.ssh/config
+# macOS / Linux
+AINODE_TMP_KEY=$(mktemp /tmp/ainode_key_XXXXX)
+cp "$DONGLE_PATH/ID_ED255" "$AINODE_TMP_KEY"
+chmod 600 "$AINODE_TMP_KEY"
+SSH_CMD="ssh -F $DONGLE_PATH/SSHCFG -i $AINODE_TMP_KEY AINode"
+SCP_CMD="scp -F $DONGLE_PATH/SSHCFG -i $AINODE_TMP_KEY"
 ```
 
-## Deployment Workflow
+```powershell
+# Windows
+$tmpKey = "$env:TEMP\ainode_key_$([System.IO.Path]::GetRandomFileName())"
+Copy-Item "$DONGLE_PATH\ID_ED255" $tmpKey
+icacls $tmpKey /inheritance:r /grant "${env:USERNAME}:(R)" | Out-Null
+$SSH_CMD = "ssh -F `"$DONGLE_PATH\SSHCFG`" -i `"$tmpKey`" AINode"
+```
 
-1. Detect Dongle → set `DONGLE_PATH`
-2. Test connectivity: `ssh -F ... AINode "echo ok"`
-3. Archive project: `tar -czf /tmp/svc.tar.gz --exclude='.git' --exclude='node_modules' .`
-4. Upload: `scp -F ... /tmp/svc.tar.gz AINode:~/services/<name>/`
-5. Deploy: `ssh -F ... AINode "cd ~/services/<name> && tar -xzf svc.tar.gz && docker compose up -d --build"`
-6. Verify: `ssh -F ... AINode "docker ps | grep <name>"`
+Dongle absent fallback: `SSH_CMD = "ssh AINode"` (requires `Host AINode` in `~/.ssh/config`)
+
+---
+
+## Step 3: First-Time Network Setup
+
+AINode is at fixed IP `192.168.1.100` via RJ45 direct connection.
+New computers need the LAN adapter set to the same subnet:
+
+```bash
+# macOS
+networksetup -setmanual "USB 10/100/1000 LAN" 192.168.1.101 255.255.255.0
+# Linux
+sudo ip addr add 192.168.1.101/24 dev eth0 && sudo ip link set eth0 up
+```
+
+```powershell
+# Windows
+New-NetIPAddress -InterfaceAlias "乙太網路" -IPAddress 192.168.1.101 -PrefixLength 24
+```
+
+---
+
+## Step 4: Deployment Workflow
+
+1. Detect Dongle → set `DONGLE_PATH` → copy key to temp
+2. Test connectivity: `$SSH_CMD -o ConnectTimeout=5 "echo ok && whoami"`
+3. Archive: `tar -czf /tmp/svc.tar.gz --exclude='.git' --exclude='node_modules' .`
+4. Upload: `$SCP_CMD /tmp/svc.tar.gz AINode:~/services/<name>/`
+5. Deploy: `$SSH_CMD "cd ~/services/<name> && tar -xzf svc.tar.gz && docker compose up -d --build"`
+6. Verify: `$SSH_CMD "docker ps | grep <name>"`
+7. Cleanup: `rm -f "$AINODE_TMP_KEY"` / `Remove-Item $tmpKey`
+
+---
 
 ## Useful Commands
 
 ```bash
 # Service logs
-ssh [...] AINode "docker logs -f <service>"
+$SSH_CMD "docker logs -f <service>"
 
 # Resource usage
-ssh [...] AINode "docker stats --no-stream"
+$SSH_CMD "docker stats --no-stream"
 
 # Disk space
-ssh [...] AINode "df -h /"
+$SSH_CMD "df -h /"
 
 # All running services
-ssh [...] AINode "docker compose ls"
+$SSH_CMD "docker compose ls"
 ```
+
+---
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `UNPROTECTED PRIVATE KEY FILE` | Key used directly from FAT Dongle | Copy to temp (Step 2) |
+| `No route to host` | Laptop not on 192.168.1.x subnet | Set static IP (Step 3) |
+| `Permission denied (publickey)` | Dongle not paired with this AINode | Insert Dongle into AINode USB first |
+
+---
 
 ## Upcoming Features
 
 > Under development — will be enabled in a future AINode update.
 
 ### MCP Integration
-AINode will provide an MCP (Model Context Protocol) server accessible over SSH,
-allowing Gemini CLI and other AI agents to query AINode state directly:
+AINode will provide an MCP (Model Context Protocol) server over SSH:
 ```
-# MCP server (coming soon)
 # Transport: SSH tunnel
 # Capabilities: service management, log streaming, resource monitoring, deployment
 ```
@@ -75,5 +126,4 @@ GET  /status           — system snapshot (CPU, RAM, disk, uptime)
 GET  /services         — list all Docker services with health status
 POST /deploy           — trigger deployment pipeline
 GET  /logs/{service}   — structured, AI-friendly log output
-GET  /metrics          — Prometheus-compatible metrics
 ```
